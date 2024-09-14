@@ -1,0 +1,81 @@
+body {background-color: #cdcdcd;
+margin: 0px;
+font-size: 1.5vw;
+}
+
+h1 {margin: 0px;
+    padding: 8px;
+    font-family: "Fredoka One";
+    box-shadow: 5px 1px 8px 3px black;
+    width: 50%;
+    border-radius: 1;
+}
+
+h2 {text-align: center;}
+
+ul {margin: 0px;
+}
+
+body {font-family: Helvetica, Arial, sans-serif;}
+body > header {
+    background-color: rgb(255, 202, 229);
+    display: flex;
+    height: 12vh;
+    align-items: center;
+    justify-content: space-between;
+}
+
+#nav-ul {
+    display: flex;
+}
+
+#nav-ul>li {
+    padding: 8px;
+    margin: 16px;
+}
+
+
+body > header > nav > ul {
+    list-style: none;
+    text-decoration: none;
+}
+
+.navbutton {
+    color: black;
+    text-decoration: none;
+    padding: 12px;
+    border: 1px solid white;
+    border-radius: 5%;
+}
+
+body > footer {
+    background-color: rgb(255, 202, 229);
+    display: flex;
+}
+
+#footer-ul {
+    display: flex;
+    list-style: none;
+}
+
+#footer-ul> div > li {
+    margin-left: 12px;
+}
+
+#footer-ul> div > li > a {
+    text-decoration: none;
+    color: black;
+}
+
+body > main article {
+    width: 70%;
+    margin: auto;
+}
+
+#main-content {
+    display: flex;
+}
+
+form {text-align: center;}
+
+img {border-radius: 35;}
