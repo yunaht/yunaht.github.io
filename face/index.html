@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0f14">
+<title>Face Read Cam</title>
+<style>
+  /* Layout: full-screen viewfinder, verdict banner under the video, seven scores below. */
+  :root {
+    --bg: #0c0f14;
+    --panel: #161b24;
+    --fg: #f2f4f7;
+    --muted: #8b94a5;
+    --line: #262d3a;
+    --accent: #ffd400;
+    --good: #4ade80;
+    color-scheme: dark;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.4 -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column;
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+    padding-block: 10px;
+    gap: 10px;
+    -webkit-user-select: none; user-select: none;
+  }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .02em; }
+  #status { font-size: 12px; color: var(--muted); text-align: right; min-width: 0; }
+
+  .view {
+    position: relative; flex: 1 1 auto; min-height: 0;
+    background: #000; border-radius: 14px; overflow: hidden;
+  }
+  video, #still { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #still { display: none; }
+  #box { position: absolute; border: 3px solid var(--good); border-radius: 6px; display: none; pointer-events: none; }
+  .tap {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 24px; color: var(--muted); font-size: 14px;
+  }
+  .tap b { color: var(--fg); display: block; font-size: 17px; margin-bottom: 6px; }
+  .tap button { margin-top: 14px; }
+
+  .verdict { background: var(--panel); border-radius: 12px; padding: 12px 14px; text-align: center; border: 1px solid var(--line); }
+  .verdict .rec { font-size: 24px; font-weight: 700; letter-spacing: .02em; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .verdict .rec.unsure { color: var(--fg); }
+  .verdict .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  .scores { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; padding: 0 4px; font-variant-numeric: tabular-nums; font-size: 13px; }
+  .scores div { display: flex; justify-content: space-between; color: var(--muted); }
+  .scores div.best { color: var(--fg); font-weight: 600; }
+
+  .bar { display: flex; gap: 8px; }
+  button {
+    flex: 1; font: inherit; font-size: 14px; font-weight: 600; padding: 11px 12px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: #111; border-color: var(--accent); }
+  button:disabled { opacity: .5; }
+  button:focus-visible { outline: 2px solid var(--good); outline-offset: 2px; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Face Read Cam</h1>
+  <div id="status">Loading…</div>
+</header>
+
+<div class="view">
+  <video id="cam" playsinline muted autoplay></video>
+  <img id="still" alt="">
+  <div id="box"></div>
+  <div class="tap" id="tap">
+    <div>
+      <b>Point the camera at the face</b>
+      Fill the frame with the face on the screen. Avoid glare and keep the phone square-on.
+      <br>
+      <button class="primary" id="startBtn" type="button" disabled>Loading model…</button>
+    </div>
+  </div>
+</div>
+
+<div class="verdict">
+  <div class="rec" id="rec">—</div>
+  <div class="sub" id="sub">Waiting for a face</div>
+</div>
+
+<div class="scores" id="scores"></div>
+
+<div class="bar">
+  <button type="button" id="flipBtn">Flip camera</button>
+  <button type="button" id="photoBtn">Use a photo</button>
+  <input type="file" id="file" accept="image/*">
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/ort.min.js"></script>
+<script>
+(() => {
+  // --- the same pieces as the desktop script: a face detector, then the HSEmotion model ---
+  const FACEAPI = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model/';
+  const ORT_DIST = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/';
+  const MODEL_URL = 'https://cdn.jsdelivr.net/gh/HSE-asavchenko/face-emotion-recognition@main/models/affectnet_emotions/onnx/enet_b0_8_best_vgaf.onnx';
+  const MODEL_KEY = 'enet_b0_8_best_vgaf';
+  const SIZE = 224;
+  const MODEL_LABELS = ['Anger', 'Contempt', 'Disgust', 'Fear', 'Happiness', 'Neutral', 'Sadness', 'Surprise'];
+  const GAME_LABELS = ['Anger', 'Disgust', 'Fear', 'Happiness', 'Neutral', 'Sadness', 'Surprise'];
+  const SMOOTH = 0.5;     // how much of the previous reading carries over on the live feed
+
+  const $ = (id) => document.getElementById(id);
+  const cam = $('cam'), still = $('still'), box = $('box'), tap = $('tap'), startBtn = $('startBtn');
+  const status = $('status'), rec = $('rec'), sub = $('sub'), scores = $('scores');
+  let facing = 'environment', stream = null, session = null, inputName = null;
+  let smoothed = null, running = false, busy = false;
+
+  const say = (t) => { status.textContent = t; };
+
+  // ---------- model cache so the 16 MB download happens once per phone ----------
+  function idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('facecam', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('models');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function cacheGet(key) {
+    try {
+      const db = await idb();
+      return await new Promise((res) => {
+        const q = db.transaction('models').objectStore('models').get(key);
+        q.onsuccess = () => res(q.result || null); q.onerror = () => res(null);
+      });
+    } catch (_) { return null; }
+  }
+  async function cachePut(key, buf) {
+    try {
+      const db = await idb();
+      db.transaction('models', 'readwrite').objectStore('models').put(buf, key);
+    } catch (_) {}
+  }
+
+  async function fetchModel() {
+    const cached = await cacheGet(MODEL_KEY);
+    if (cached) return cached;
+    const r = await fetch(MODEL_URL);
+    if (!r.ok) throw new Error('model download failed ' + r.status);
+    const total = +r.headers.get('content-length') || 0;
+    const reader = r.body.getReader();
+    const chunks = []; let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value); got += value.length;
+      if (total) say(`Downloading model ${Math.round(got / total * 100)}%`);
+    }
+    const buf = new Uint8Array(got); let o = 0;
+    for (const c of chunks) { buf.set(c, o); o += c.length; }
+    cachePut(MODEL_KEY, buf.buffer);
+    return buf.buffer;
+  }
+
+  // ---------- expression model ----------
+  const work = document.createElement('canvas');
+  work.width = SIZE; work.height = SIZE;
+  const wctx = work.getContext('2d', { willReadFrequently: true });
+  const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
+
+  async function classify(el, b) {
+    // crop the face with a 10% margin, as the model was trained with
+    const sw = el.videoWidth || el.naturalWidth, sh = el.videoHeight || el.naturalHeight;
+    const m = b.width * 0.1;
+    const x0 = Math.max(0, b.x - m), y0 = Math.max(0, b.y - m);
+    const x1 = Math.min(sw, b.x + b.width + m), y1 = Math.min(sh, b.y + b.height + m);
+    wctx.drawImage(el, x0, y0, x1 - x0, y1 - y0, 0, 0, SIZE, SIZE);
+    const px = wctx.getImageData(0, 0, SIZE, SIZE).data;
+    const n = SIZE * SIZE;
+    const data = new Float32Array(3 * n);
+    for (let i = 0; i < n; i++) {
+      data[i]         = (px[i * 4]     / 255 - MEAN[0]) / STD[0];
+      data[n + i]     = (px[i * 4 + 1] / 255 - MEAN[1]) / STD[1];
+      data[2 * n + i] = (px[i * 4 + 2] / 255 - MEAN[2]) / STD[2];
+    }
+    const out = await session.run({ [inputName]: new ort.Tensor('float32', data, [1, 3, SIZE, SIZE]) });
+    const logits = out[Object.keys(out)[0]].data;
+    // softmax over the game's seven labels only (drops Contempt)
+    const keep = MODEL_LABELS.map((l, i) => [l, i]).filter(([l]) => GAME_LABELS.includes(l));
+    const mx = Math.max(...keep.map(([, i]) => logits[i]));
+    const ex = keep.map(([l, i]) => [l, Math.exp(logits[i] - mx)]);
+    const s = ex.reduce((a, [, v]) => a + v, 0);
+    return Object.fromEntries(ex.map(([l, v]) => [l, v / s]));
+  }
+
+  // ---------- display ----------
+  function showResult(probs) {
+    if (!smoothed) smoothed = { ...probs };
+    else for (const k in probs) smoothed[k] = SMOOTH * smoothed[k] + (1 - SMOOTH) * probs[k];
+    const ranked = GAME_LABELS.map((l) => [l, smoothed[l]]).sort((a, b) => b[1] - a[1]);
+    const [top, p] = ranked[0];
+    const gap = p - ranked[1][1];
+    rec.textContent = `${top.toUpperCase()}  ${Math.round(p * 100)}%`;
+    rec.classList.toggle('unsure', gap < 0.15);
+    sub.textContent = gap < 0.15 ? `Close call with ${ranked[1][0]}` : 'Recommended';
+    scores.innerHTML = ranked.map(([l, v], i) =>
+      `<div class="${i === 0 ? 'best' : ''}"><span>${l}</span><span>${Math.round(v * 100)}%</span></div>`).join('');
+  }
+
+  function showNoFace() {
+    box.style.display = 'none';
+    rec.textContent = '—'; rec.classList.remove('unsure');
+    sub.textContent = 'No face in view';
+    smoothed = null;
+  }
+
+  function placeBox(b, el) {
+    if (!el.parentElement) { box.style.display = 'none'; return; }
+    const vw = el.videoWidth || el.naturalWidth, vh = el.videoHeight || el.naturalHeight;
+    const r = el.getBoundingClientRect(), pr = el.parentElement.getBoundingClientRect();
+    const s = Math.min(r.width / vw, r.height / vh);
+    const ox = (r.width - vw * s) / 2 + (r.left - pr.left), oy = (r.height - vh * s) / 2 + (r.top - pr.top);
+    Object.assign(box.style, { display: 'block', left: ox + b.x * s + 'px', top: oy + b.y * s + 'px',
+                               width: b.width * s + 'px', height: b.height * s + 'px' });
+  }
+
+  // ---------- pipeline ----------
+  const detOpts = () => new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 });
+
+  async function analyseOnce(el) {
+    const det = await faceapi.detectSingleFace(el, detOpts());
+    if (!det) { showNoFace(); return null; }
+    placeBox(det.box, el);
+    const probs = await classify(el, det.box);
+    showResult(probs);
+    return probs;
+  }
+
+  async function loop() {
+    if (!running) return;
+    if (cam.readyState >= 2 && !busy) {
+      busy = true;
+      try { await analyseOnce(cam); } catch (e) { console.error(e); }
+      busy = false;
+    }
+    setTimeout(loop, 120);
+  }
+
+  async function startCamera() {
+    stopCamera();
+    still.style.display = 'none'; cam.style.display = '';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    } catch (e) {
+      console.error(e);
+      sub.textContent = 'Camera blocked. Allow camera access for this site, or use a photo.';
+      return;
+    }
+    cam.srcObject = stream;
+    await cam.play().catch(() => {});
+    tap.style.display = 'none';
+    running = true; smoothed = null;
+    say('Live');
+    loop();
+  }
+
+  function stopCamera() {
+    running = false;
+    if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  }
+
+  startBtn.onclick = startCamera;
+  $('flipBtn').onclick = () => { facing = facing === 'environment' ? 'user' : 'environment'; if (session) startCamera(); };
+  $('photoBtn').onclick = () => { if (session) $('file').click(); };
+  $('file').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    stopCamera();
+    tap.style.display = 'none';
+    cam.style.display = 'none'; still.style.display = 'block';
+    still.src = URL.createObjectURL(f);
+    await new Promise((r) => { still.onload = r; });
+    smoothed = null; say('Photo');
+    await analyseOnce(still);
+  };
+
+  // for automated testing
+  window.__analyseImage = async (el) => { smoothed = null; return analyseOnce(el); };
+
+  (async () => {
+    try {
+      ort.env.wasm.wasmPaths = ORT_DIST;
+      say('Loading detector…');
+      await faceapi.nets.tinyFaceDetector.loadFromUri(FACEAPI);
+      say('Loading model…');
+      const buf = await fetchModel();
+      say('Starting model…');
+      session = await ort.InferenceSession.create(buf, { executionProviders: ['wasm'] });
+      inputName = session.inputNames[0];
+      say('Ready');
+      startBtn.disabled = false; startBtn.textContent = 'Start camera';
+      window.__ready = true;
+    } catch (e) {
+      console.error(e);
+      say('Could not load. Check your connection and reload.');
+      startBtn.textContent = 'Load failed';
+    }
+  })();
+})();
+</script>
+</body>
+</html>
